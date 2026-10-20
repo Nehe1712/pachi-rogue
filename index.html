@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>パチローグ</title>
+<style>
+html,body{margin:0;height:100%;background:#0b0d18;color:#eef;font-family:system-ui,"Yu Gothic UI","Hiragino Sans",sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+#wrap{position:relative;height:100%;display:flex;align-items:center;justify-content:center}
+canvas{display:block;border-radius:12px;box-shadow:0 0 40px #000a;cursor:crosshair}
+#btns{position:fixed;top:8px;right:8px;display:flex;gap:6px;z-index:4}
+#btns button{font-size:18px;width:40px;height:40px;border-radius:10px;border:1px solid #3a4270;background:#1c2138;color:#fff;cursor:pointer}
+#btns button.on{background:#3a4270}
+.ov{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#000b;z-index:5;padding:16px;box-sizing:border-box}
+.ov.on{display:flex}
+.panel{background:#1c2138;border:2px solid #3a4270;border-radius:16px;padding:20px;max-width:460px;width:100%;text-align:center;max-height:100%;overflow:auto;box-sizing:border-box}
+h1{margin:0 0 4px;font-size:34px;letter-spacing:2px;background:linear-gradient(90deg,#7ff0a8,#ffd166,#ff7aa8);-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{margin:0 0 12px;font-size:22px}
+p{line-height:1.6;margin:8px 0}
+.rules{text-align:left;font-size:14px;background:#141829;border-radius:10px;padding:10px 14px}
+.rules b{color:#ffd166}
+.big{font-size:18px;padding:12px 28px;border-radius:12px;border:none;background:#3ee07a;color:#0b0d18;font-weight:bold;cursor:pointer;margin-top:10px}
+.cards{display:flex;flex-direction:column;gap:10px}
+.card{display:flex;align-items:center;gap:12px;text-align:left;background:#141829;border:2px solid #3a4270;border-radius:12px;padding:12px;cursor:pointer;color:#eef;font:inherit}
+.card:hover{border-color:#7ff0a8;transform:translateY(-1px)}
+.card.r1{border-color:#c48bff}
+.card .ic{font-size:30px;width:40px;text-align:center}
+.card .nm{font-weight:bold;font-size:16px}
+.card .ds{font-size:13px;color:#aab}
+.card .rr{font-size:11px;color:#c48bff}
+.dot{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin-right:4px}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<div id="btns"><button id="bSpd" title="早送り">⏩</button><button id="bSnd" title="音">🔊</button></div>
+
+<div class="ov on" id="ovStart"><div class="panel">
+  <h1>パチローグ</h1>
+  <p style="color:#aab;margin-top:0">玉を増やして、敵をぶっ倒せ</p>
+  <div class="rules">
+    <p>🎯 上の発射台から玉を撃つ（マウスで狙ってクリック／スマホは指で狙って離す）</p>
+    <p><span class="dot" style="background:#8fa3d6"></span>ペグに当たるたび敵にダメージ</p>
+    <p><span class="dot" style="background:#3ee07a"></span><b>分裂ペグ</b>：玉が増える！</p>
+    <p><span class="dot" style="background:#ff8a3d"></span>クリティカル：5倍ダメージ　<span class="dot" style="background:#b04bff"></span>爆弾：大ダメージ＋玉ばらまき</p>
+    <p><span class="dot" style="background:#ff5fa2"></span>回復ペグ　／　真ん中のポケット <b>♻</b> は玉がおかわりで戻ってくる</p>
+    <p>敵は数ターンごとに攻撃してくる。倒すと強化を1つ選べる。HPが0になったら終わり。</p>
+  </div>
+  <p id="bestTxt" style="color:#ffd166"></p>
+  <button class="big" id="bStart">はじめる</button>
+</div></div>
+
+<div class="ov" id="ovDraft"><div class="panel">
+  <h2 id="draftTitle">勝利！ 強化を1つ選ぼう</h2>
+  <div class="cards" id="cards"></div>
+</div></div>
+
+<div class="ov" id="ovOver"><div class="panel">
+  <h2>ゲームオーバー</h2>
+  <p id="overTxt"></p>
+  <p id="overPerks" style="font-size:22px"></p>
+  <button class="big" id="bRetry">もう一度</button>
+</div></div>
+
+<script>
+'use strict';
+// ---------- 定数 ----------
+const W = 480, H = 800;
+const LX = W / 2, LY = 168;          // 発射台
+const BR = 6, PR = 7;                // 玉・ペグの半径
+const GRAV = 900, SPD = 430;
+const CEIL = 140;                    // HUD の下端（天井）
+const POCKY = 735;                   // ポケットの上端
+const NPOCK = 5, PW = W / NPOCK;
+const DIV = [1, 2, 3, 4].map(i => i * PW);
+const MAXB = 500;                    // 同時に存在できる玉の上限（超えた分はダメージに変換）
+const DT = 1 / 120;
+
+const cv = document.getElementById('cv'), cx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+// ---------- ペグの種類 ----------
+const PT = {
+  n:  { c: '#8fa3d6', lit: '#ffffff' },
+  sp: { c: '#3ee07a', lit: '#c8ffd9', lb: '×' },
+  cr: { c: '#ff8a3d', lit: '#ffe0c4', lb: '!' },
+  hp: { c: '#ff5fa2', lit: '#ffd0e4', lb: '+' },
+  bm: { c: '#b04bff', lit: '#ecd2ff', lb: '✹' },
+};
+
+// ---------- 敵 ----------
+const ENEMIES = [
+  { e: '🟢', n: 'スライム', hp: 1.0, atk: 1.0, cd: 3 },
+  { e: '🦇', n: 'コウモリ', hp: 0.8, atk: 0.8, cd: 2 },
+  { e: '👺', n: 'ゴブリン', hp: 1.1, atk: 1.2, cd: 3 },
+  { e: '💀', n: 'ガイコツ', hp: 1.3, atk: 1.0, cd: 3 },
+  { e: '🗿', n: 'ゴーレム', hp: 1.8, atk: 1.7, cd: 4 },
+  { e: '👻', n: 'ゴースト', hp: 0.9, atk: 1.1, cd: 2 },
+  { e: '🦂', n: 'サソリ',   hp: 1.1, atk: 1.4, cd: 3 },
+];
+const BOSSES = [
+  { e: '🐉', n: 'ドラゴン',   hp: 2.6, atk: 1.6, cd: 3 },
+  { e: '👹', n: 'オニ',       hp: 2.8, atk: 1.8, cd: 3 },
+  { e: '🐙', n: 'クラーケン', hp: 3.0, atk: 1.3, cd: 2 },
+];
+
+// ---------- 強化 ----------
+// r: 0=通常 1=レア / max: 取れる回数 / ap: S.mods を書き換える
+const PERKS = [
+  { id: 'sp',   ic: '🟢', nm: '分裂ペグ +2',       ds: '玉が増える緑のペグが2個増える',              r: 0, max: 8,  ap: m => m.nSplit += 2 },
+  { id: 'spn',  ic: '✳️', nm: '分裂 +1',           ds: '分裂ペグで増える玉が1個多くなる',            r: 1, max: 4,  ap: m => m.split++ },
+  { id: 'dmg',  ic: '⚔️', nm: 'ペグ威力 +1',       ds: 'すべてのダメージの基本値 +1',                r: 0, max: 10, ap: m => m.dmg++ },
+  { id: 'shot', ic: '🎯', nm: '同時発射 +1',       ds: '1回に撃つ玉が1個増える',                    r: 1, max: 4,  ap: m => m.shots++ },
+  { id: 'cr',   ic: '🟠', nm: 'クリティカルペグ +3', ds: 'オレンジのペグが3個増える',                 r: 0, max: 6,  ap: m => m.nCrit += 3 },
+  { id: 'crx',  ic: '💥', nm: 'クリ倍率 +3',       ds: 'クリティカルペグの倍率が +3',                r: 1, max: 5,  ap: m => m.critX += 3 },
+  { id: 'bm',   ic: '💣', nm: '爆弾ペグ +1',       ds: '大ダメージ＋玉ばらまき（1ターン1回）が1個増える', r: 0, max: 5,  ap: m => m.nBomb++ },
+  { id: 'bmb',  ic: '🎆', nm: '爆弾の玉 +3',       ds: '爆弾がばらまく玉が3個増える',                r: 1, max: 4,  ap: m => m.bombBalls += 3 },
+  { id: 'pk',   ic: '🕳️', nm: 'ポケット強化',      ds: '下のポケットのダメージが2倍',                r: 1, max: 4,  ap: m => m.pocketX *= 2 },
+  { id: 're',   ic: '♻️', nm: 'おかわり +1',       ds: '真ん中のポケットで戻ってくる玉 +1',          r: 0, max: 5,  ap: m => m.reDrop++ },
+  { id: 'reg',  ic: '🔁', nm: 'おかわりのおかわり', ds: 'おかわりで戻った玉も、もう一度おかわりできる', r: 1, max: 2,  ap: m => m.reGen++ },
+  { id: 'hpp',  ic: '💗', nm: '回復ペグ +2',       ds: 'ピンクのペグが2個増える',                    r: 0, max: 4,  ap: m => m.nHeal += 2 },
+  { id: 'vamp', ic: '🩸', nm: '吸血',              ds: 'ペグに30回当たるごとに HP +1',               r: 1, max: 3,  ap: m => m.vamp++ },
+  { id: 'mhp',  ic: '❤️', nm: '最大HP +15',        ds: '最大HPが15増えて全回復',                     r: 0, max: 99, ap: () => { S.maxhp += 15; S.hp = S.maxhp; } },
+];
+
+// ---------- 状態 ----------
+let S = null;
+let best = lsGet('pachirogue_best', 0);
+let speed = 1, soundOn = lsGet('pachirogue_snd', true);
+
+function newRun() {
+  S = {
+    stage: 0, hp: 50, maxhp: 50, totalDmg: 0,
+    mods: { dmg: 1, split: 1, shots: 1, nSplit: 7, nCrit: 3, nHeal: 1, nBomb: 1, critX: 5,
+            pocketX: 1, reDrop: 2, reGen: 1, vamp: 0, bombDmg: 15, bombBalls: 4 },
+    perks: {}, state: 'aim', aim: Math.PI / 2,
+    balls: [], queue: [], pegs: [], fx: [], texts: [], pockFl: [0, 0, 0, 0, 0],
+    time: 0, turnT: 0, turnDmg: 0, hits: 0, shake: 0, hurt: 0, maxBalls: 0,
+  };
+  nextStage();
+}
+
+function nextStage() {
+  S.stage++;
+  const boss = S.stage % 5 === 0;
+  const t = boss ? pick(BOSSES) : pick(ENEMIES);
+  const hp = Math.round(40 * Math.pow(1.33, S.stage - 1) * t.hp);
+  S.enemy = { ...t, boss, max: hp, hp, atk: Math.round((4 + S.stage * 2) * t.atk), cdLeft: t.cd, hit: 0, dead: false, deadT: 0, atkAnim: 0 };
+  S.turn = 0;
+  genPegs();
+  S.state = 'aim';
+}
+
+function genPegs() {
+  const P = [];
+  let id = 0;
+  for (let r = 0; r < 11; r++) {
+    const y = 228 + r * 45, off = r % 2 ? 22 : 0;
+    for (let x = 28 + off; x <= W - 26; x += 44) {
+      if (Math.random() < 0.12) continue;
+      P.push({ id: id++, x: x + rnd(-3, 3), y: y + rnd(-3, 3), t: 'n', fl: 0, used: false, cnt: 0 });
+    }
+  }
+  // 特殊ペグを割り当て
+  const idx = P.map((_, i) => i).sort(() => Math.random() - 0.5);
+  const m = S.mods;
+  const plan = [['bm', m.nBomb], ['sp', m.nSplit], ['cr', m.nCrit], ['hp', m.nHeal]];
+  let k = 0;
+  const limit = P.length - 15;
+  for (const [t, n] of plan) for (let i = 0; i < n && k < limit; i++) P[idx[k++]].t = t;
+  S.pegs = P;
+}
+
+function pockets() {
+  const m = S.mods;
+  return [
+    { k: 'd', v: 3 * m.pocketX }, { k: 'd', v: 1 * m.pocketX }, { k: 'r', v: m.reDrop },
+    { k: 'd', v: 1 * m.pocketX }, { k: 'd', v: 3 * m.pocketX },
+  ];
+}
+
+// ---------- 音 ----------
+let AC = null, lastSnd = 0;
+function snd(f, d = 0.06, type = 'sine', v = 0.05) {
+  if (!soundOn) return;
+  try {
+    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+    const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g).connect(AC.destination); o.start(t); o.stop(t + d);
+  } catch (e) {}
+}
+function pegSnd(f) { const n = performance.now(); if (n - lastSnd < 35) return; lastSnd = n; snd(f, 0.05, 'triangle', 0.035); }
+
+// ---------- 玉 ----------
+function spawnBall(x, y, vx, vy, once, gen, lastP = -1) {
+  if (S.balls.length >= MAXB) { addDmg(S.mods.dmg * 2, x, y, false); return; }
+  S.balls.push({ x, y, vx, vy, once, gen, lastP, lastT: S.time, slow: 0 });
+}
+
+function fire() {
+  if (!S || S.state !== 'aim') return;
+  S.state = 'fire'; S.turn++; S.turnDmg = 0; S.turnT = 0; S.maxBalls = 0;
+  for (const p of S.pegs) { p.used = false; p.cnt = 0; }
+  const n = S.mods.shots;
+  for (let i = 0; i < n; i++) S.queue.push({ t: i * 0.12, a: S.aim + (i - (n - 1) / 2) * 0.07, gen: 0, sp: SPD });
+  snd(320, 0.12, 'square', 0.04);
+}
+
+function addDmg(d, x, y, big) {
+  const e = S.enemy;
+  if (e.dead) return;
+  d = Math.max(1, Math.round(d));
+  e.hp -= d; S.turnDmg += d; S.totalDmg += d; e.hit = 0.12;
+  if (big || S.texts.length < 60) S.texts.push({ x, y, s: String(d), c: big ? '#ffd166' : '#fff', t: big ? 1.0 : 0.6, big });
+  if (e.hp <= 0) { e.hp = 0; e.dead = true; e.deadT = 0; snd(110, 0.5, 'sawtooth', 0.08); snd(660, 0.4, 'triangle', 0.06); }
+}
+
+function heal(n, x, y) {
+  if (S.hp >= S.maxhp) return;
+  S.hp = Math.min(S.maxhp, S.hp + n);
+  S.texts.push({ x, y, s: '+' + n + '❤', c: '#ff8ab8', t: 0.8 });
+}
+
+function burst(x, y, c, n, sp = 140) {
+  for (let i = 0; i < n && S.fx.length < 400; i++) {
+    const a = Math.random() * Math.PI * 2, v = rnd(sp * 0.3, sp);
+    S.fx.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: rnd(0.3, 0.6), c });
+  }
+}
+
+function hitPeg(b, p) {
+  if (b.lastP === p.id && S.time - b.lastT < 0.2) return;
+  b.lastP = p.id; b.lastT = S.time;
+  p.fl = 1; S.hits++;
+  const m = S.mods;
+  let d = m.dmg, big = false;
+  if (p.t === 'n') pegSnd(520 + (p.y - 228) * 0.8);
+  else if (p.t === 'cr') { d *= m.critX; big = true; pegSnd(900); burst(p.x, p.y, '#ff8a3d', 6); }
+  else if (p.t === 'sp') {
+    if (!b.once.has(p.id)) {
+      b.once.add(p.id);
+      const base = Math.atan2(b.vy, b.vx), s = Math.max(200, Math.hypot(b.vx, b.vy));
+      for (let i = 0; i < m.split; i++) {
+        const a = base + rnd(-1.3, 1.3);
+        spawnBall(b.x, b.y, Math.cos(a) * s, Math.sin(a) * s, new Set(b.once), b.gen, p.id);
+      }
+      burst(p.x, p.y, '#3ee07a', 8);
+      pegSnd(1200);
+    } else pegSnd(700);
+  }
+  else if (p.t === 'hp') { if (p.cnt < 3) { p.cnt++; heal(1, p.x, p.y - 14); } pegSnd(800); }
+  else if (p.t === 'bm') {
+    if (!p.used) {
+      p.used = true; d = m.bombDmg * m.dmg; big = true;
+      for (let i = 0; i < m.bombBalls; i++) {
+        const a = (i / m.bombBalls) * Math.PI * 2 + rnd(-0.2, 0.2);
+        spawnBall(p.x + Math.cos(a) * 14, p.y + Math.sin(a) * 14, Math.cos(a) * 320, Math.sin(a) * 320, new Set(), b.gen, p.id);
+      }
+      burst(p.x, p.y, '#d08bff', 30, 260); S.shake = Math.max(S.shake, 0.25);
+      snd(90, 0.35, 'sawtooth', 0.08);
+    } else pegSnd(400);
+  }
+  addDmg(d, p.x, p.y - 12, big);
+  if (m.vamp && S.hits % 30 === 0) heal(m.vamp, LX, LY + 20);
+}
+
+function land(b) {
+  const i = Math.max(0, Math.min(NPOCK - 1, Math.floor(b.x / PW)));
+  const pk = pockets()[i], m = S.mods;
+  S.pockFl[i] = 1;
+  if (pk.k === 'd') { addDmg(pk.v * m.dmg, b.x, POCKY + 10, pk.v >= 3); pegSnd(300); }
+  else if (b.gen < m.reGen) {
+    for (let j = 0; j < pk.v; j++) S.queue.push({ t: 0.05 + j * 0.06, a: rnd(0.35, Math.PI - 0.35), gen: b.gen + 1, sp: SPD * 0.8 });
+    S.texts.push({ x: b.x, y: POCKY - 6, s: '♻+' + pk.v, c: '#7ff0a8', t: 0.7 });
+    snd(980, 0.08, 'square', 0.03);
+  } else addDmg(m.dmg, b.x, POCKY + 10, false);
+}
+
+// ---------- 物理 ----------
+function step(dt) {
+  S.time += dt; S.turnT += dt;
+  for (let i = S.queue.length - 1; i >= 0; i--) {
+    const q = S.queue[i];
+    q.t -= dt;
+    if (q.t <= 0) { S.queue.splice(i, 1); spawnBall(LX + Math.cos(q.a) * 14, LY + Math.sin(q.a) * 14, Math.cos(q.a) * q.sp, Math.sin(q.a) * q.sp, new Set(), q.gen); }
+  }
+  const B = S.balls, P = S.pegs, rr = BR + PR;
+  for (let i = B.length - 1; i >= 0; i--) {
+    const b = B[i];
+    b.vy += GRAV * dt; b.x += b.vx * dt; b.y += b.vy * dt;
+    if (b.x < BR) { b.x = BR; b.vx = Math.abs(b.vx) * 0.7; }
+    else if (b.x > W - BR) { b.x = W - BR; b.vx = -Math.abs(b.vx) * 0.7; }
+    if (b.y < CEIL + BR) { b.y = CEIL + BR; b.vy = Math.abs(b.vy) * 0.5; }
+    for (let j = 0; j < P.length; j++) {
+      const p = P[j], dx = b.x - p.x, dy = b.y - p.y;
+      if (dx > rr || dx < -rr || dy > rr || dy < -rr) continue;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= rr * rr) continue;
+      const d = Math.sqrt(d2) || 0.01, nx = dx / d, ny = dy / d;
+      b.x = p.x + nx * rr; b.y = p.y + ny * rr;
+      const vn = b.vx * nx + b.vy * ny;
+      if (vn < 0) { b.vx -= 1.55 * vn * nx; b.vy -= 1.55 * vn * ny; b.vx += rnd(-25, 25); }
+      hitPeg(b, p);
+    }
+    if (b.y > POCKY - BR) {
+      for (const x0 of DIV) {
+        const dx = b.x - x0;
+        if (Math.abs(dx) < BR + 2) { b.x = x0 + (dx < 0 ? -1 : 1) * (BR + 2); b.vx = -b.vx * 0.4; }
+      }
+    }
+    if (b.y > H - BR) { B.splice(i, 1); land(b); continue; }
+    if (b.vx * b.vx + b.vy * b.vy < 900) {
+      b.slow += dt;
+      if (b.slow > 0.8) { b.vx = rnd(-140, 140); b.vy = -60; b.slow = 0; }
+    } else b.slow = 0;
+  }
+  S.maxBalls = Math.max(S.maxBalls, B.length);
+  // 長引きすぎたら残りを着地させる
+  if (S.turnT > 30 && B.length) { for (const b of B.splice(0)) land(b); S.queue.length = 0; }
+}
+
+function endTurn() {
+  const e = S.enemy;
+  if (e.dead) { win(); return; }
+  e.cdLeft--;
+  if (e.cdLeft <= 0) {
+    e.cdLeft = e.cd; e.atkAnim = 0.4;
+    S.hp -= e.atk; S.shake = 0.45; S.hurt = 0.6;
+    S.texts.push({ x: 80, y: 112, s: '-' + e.atk, c: '#ff4d6d', t: 1.2, big: true });
+    snd(70, 0.4, 'square', 0.1);
+    if (S.hp <= 0) { S.hp = 0; gameOver(); return; }
+  }
+  S.state = 'aim';
+}
+
+function win() {
+  S.state = 'draft';
+  if (S.stage > best) { best = S.stage; lsSet('pachirogue_best', best); }
+  S.hp = Math.min(S.maxhp, S.hp + Math.round(S.maxhp * 0.2));
+  setTimeout(showDraft, 500);
+}
+
+function showDraft() {
+  const pool = PERKS.filter(p => (S.perks[p.id] || 0) < p.max);
+  const choices = [];
+  while (choices.length < 3 && pool.length) {
+    const tot = pool.reduce((s, p) => s + (p.r ? 4 : 10), 0);
+    let r = Math.random() * tot, k = 0;
+    for (; k < pool.length; k++) { r -= pool[k].r ? 4 : 10; if (r <= 0) break; }
+    choices.push(pool.splice(Math.min(k, pool.length - 1), 1)[0]);
+  }
+  $('draftTitle').textContent = `STAGE ${S.stage} クリア！ 強化を1つ選ぼう`;
+  const box = $('cards'); box.innerHTML = '';
+  for (const p of choices) {
+    const b = document.createElement('button');
+    b.className = 'card' + (p.r ? ' r1' : '');
+    const lv = S.perks[p.id] || 0;
+    b.innerHTML = `<div class="ic">${p.ic}</div><div><div class="nm">${p.nm}${lv ? ` <small>(Lv${lv + 1})</small>` : ''}</div><div class="ds">${p.ds}</div>${p.r ? '<div class="rr">レア</div>' : ''}</div>`;
+    b.onclick = () => {
+      p.ap(S.mods); S.perks[p.id] = lv + 1;
+      $('ovDraft').classList.remove('on');
+      snd(880, 0.1, 'triangle', 0.05);
+      S.balls = []; S.queue = [];
+      nextStage();
+    };
+    box.appendChild(b);
+  }
+  $('ovDraft').classList.add('on');
+}
+
+function gameOver() {
+  S.state = 'over';
+  if (S.stage - 1 > best) { best = S.stage - 1; lsSet('pachirogue_best', best); }
+  setTimeout(() => {
+    $('overTxt').innerHTML = `STAGE ${S.stage} で力尽きた…<br>総ダメージ ${S.totalDmg.toLocaleString()}　／　最高記録 STAGE ${best} クリア`;
+    $('overPerks').textContent = PERKS.filter(p => S.perks[p.id]).map(p => p.ic + (S.perks[p.id] > 1 ? '×' + S.perks[p.id] : '')).join(' ');
+    $('ovOver').classList.add('on');
+  }, 700);
+}
+
+// ---------- 照準の予測線 ----------
+function predict() {
+  let x = LX + Math.cos(S.aim) * 14, y = LY + Math.sin(S.aim) * 14, vx = Math.cos(S.aim) * SPD, vy = Math.sin(S.aim) * SPD;
+  const pts = [], rr = BR + PR, dt = 1 / 60;
+  let after = -1;
+  for (let s = 0; s < 90; s++) {
+    vy += GRAV * dt; x += vx * dt; y += vy * dt;
+    if (x < BR) { x = BR; vx = Math.abs(vx) * 0.7; }
+    if (x > W - BR) { x = W - BR; vx = -Math.abs(vx) * 0.7; }
+    for (const p of S.pegs) {
+      const dx = x - p.x, dy = y - p.y, d2 = dx * dx + dy * dy;
+      if (d2 < rr * rr) {
+        const d = Math.sqrt(d2) || 0.01, nx = dx / d, ny = dy / d;
+        x = p.x + nx * rr; y = p.y + ny * rr;
+        const vn = vx * nx + vy * ny;
+        if (vn < 0) { vx -= 1.55 * vn * nx; vy -= 1.55 * vn * ny; }
+        if (after < 0) after = 12;
+      }
+    }
+    if (s % 3 === 0) pts.push([x, y]);
+    if (after >= 0 && --after === 0) break;
+    if (y > POCKY) break;
+  }
+  return pts;
+}
+
+// ---------- 描画 ----------
+function rrect(x, y, w, h, r) { cx.beginPath(); cx.roundRect ? cx.roundRect(x, y, w, h, r) : cx.rect(x, y, w, h); }
+function bar(x, y, w, h, v, c) {
+  rrect(x, y, w, h, h / 2); cx.fillStyle = '#0b0d18'; cx.fill();
+  if (v > 0) { rrect(x, y, Math.max(h, w * v), h, h / 2); cx.fillStyle = c; cx.fill(); }
+}
+
+function draw() {
+  cx.save();
+  cx.fillStyle = '#141829'; cx.fillRect(0, 0, W, H);
+  if (S.shake > 0) cx.translate(rnd(-1, 1) * S.shake * 14, rnd(-1, 1) * S.shake * 14);
+
+  // ---- HUD ----
+  const g = cx.createLinearGradient(0, 0, 0, CEIL);
+  g.addColorStop(0, S.enemy.boss ? '#3a1630' : '#1f2546'); g.addColorStop(1, '#171c34');
+  cx.fillStyle = g; cx.fillRect(0, 0, W, CEIL);
+  cx.fillStyle = '#3a4270'; cx.fillRect(0, CEIL - 2, W, 2);
+
+  const e = S.enemy;
+  cx.textAlign = 'left'; cx.textBaseline = 'middle';
+  cx.font = 'bold 15px system-ui'; cx.fillStyle = e.boss ? '#ff7aa8' : '#aab';
+  cx.fillText(`STAGE ${S.stage}${e.boss ? '  BOSS' : ''}`, 12, 18);
+  cx.fillStyle = '#778'; cx.font = '12px system-ui';
+  cx.fillText(`TURN ${S.turn}`, 12, 36);
+
+  // 敵
+  const ex = W / 2 + (e.hit > 0 ? rnd(-5, 5) : 0), ey = 52 + (e.atkAnim > 0 ? Math.sin(e.atkAnim * 20) * 6 : 0);
+  cx.save();
+  if (e.dead) { cx.globalAlpha = Math.max(0, 1 - e.deadT * 1.5); }
+  cx.font = `${e.boss ? 62 : 54}px "Segoe UI Emoji","Apple Color Emoji",sans-serif`; cx.textAlign = 'center';
+  cx.fillText(e.e, ex, ey);
+  cx.restore();
+  cx.textAlign = 'center'; cx.font = 'bold 13px system-ui'; cx.fillStyle = '#dde';
+  cx.fillText(e.n, W / 2, 92);
+  bar(W / 2 - 110, 102, 220, 12, e.hp / e.max, e.hit > 0 ? '#fff' : '#ff4d6d');
+  cx.font = 'bold 11px system-ui'; cx.fillStyle = '#fff';
+  cx.lineWidth = 3; cx.strokeStyle = '#0b0d18'; cx.strokeText(`${e.hp} / ${e.max}`, W / 2, 108.5);
+  cx.fillText(`${e.hp} / ${e.max}`, W / 2, 108.5);
+
+  // 敵の攻撃予告
+  cx.textAlign = 'right'; cx.font = 'bold 16px system-ui';
+  cx.fillStyle = e.cdLeft <= 1 ? '#ff4d6d' : '#ffd166';
+  cx.fillText(`⚔ ${e.atk}`, W - 12, 20);
+  cx.font = '12px system-ui'; cx.fillStyle = '#aab';
+  cx.fillText(e.cdLeft <= 1 ? '次のターン攻撃！' : `あと${e.cdLeft}ターンで攻撃`, W - 12, 40);
+
+  // 今ターンのダメージ・玉数
+  cx.font = 'bold 14px system-ui'; cx.fillStyle = '#7ff0a8';
+  cx.fillText(`● ×${S.balls.length}`, W - 12, 92);
+  cx.fillStyle = '#ffd166';
+  if (S.turnDmg) cx.fillText(`${S.turnDmg.toLocaleString()} DMG`, W - 12, 112);
+
+  // プレイヤーHP
+  cx.textAlign = 'left'; cx.font = 'bold 14px system-ui'; cx.fillStyle = S.hurt > 0 ? '#ff4d6d' : '#ff8ab8';
+  cx.fillText(`❤ ${S.hp} / ${S.maxhp}`, 12, 96);
+  bar(12, 108, 120, 10, S.hp / S.maxhp, '#ff5fa2');
+
+  // ---- 盤面 ----
+  // ポケット
+  const pk = pockets();
+  for (let i = 0; i < NPOCK; i++) {
+    const x = i * PW, fl = S.pockFl[i];
+    cx.fillStyle = pk[i].k === 'r' ? `rgba(62,224,122,${0.15 + fl * 0.4})` : `rgba(255,209,102,${0.06 + fl * 0.3 + (pk[i].v >= 3 ? 0.06 : 0)})`;
+    cx.fillRect(x + 2, POCKY, PW - 4, H - POCKY);
+    cx.textAlign = 'center'; cx.fillStyle = pk[i].k === 'r' ? '#7ff0a8' : '#ffd166';
+    cx.font = 'bold 18px system-ui';
+    cx.fillText(pk[i].k === 'r' ? `♻ +${pk[i].v}` : `${pk[i].v * S.mods.dmg}`, x + PW / 2, POCKY + 36);
+  }
+  cx.fillStyle = '#3a4270';
+  for (const x0 of DIV) cx.fillRect(x0 - 2, POCKY, 4, H - POCKY);
+
+  // ペグ
+  for (const p of S.pegs) {
+    const t = PT[p.t];
+    const dim = (p.t === 'bm' && p.used);
+    if (p.fl > 0) { cx.beginPath(); cx.arc(p.x, p.y, PR + 6 * p.fl, 0, 7); cx.fillStyle = t.c + '55'; cx.fill(); }
+    cx.beginPath(); cx.arc(p.x, p.y, p.t === 'n' ? PR - 1 : PR + 2, 0, 7);
+    cx.fillStyle = dim ? '#443355' : (p.fl > 0.3 ? t.lit : t.c); cx.fill();
+    if (t.lb) { cx.fillStyle = '#0b0d18'; cx.font = 'bold 11px system-ui'; cx.textAlign = 'center'; cx.fillText(t.lb, p.x, p.y + 0.5); }
+  }
+
+  // 発射台と予測線
+  if (S.state === 'aim') {
+    cx.fillStyle = '#ffffffaa';
+    for (const [x, y] of predict()) { cx.beginPath(); cx.arc(x, y, 2, 0, 7); cx.fill(); }
+  }
+  cx.save(); cx.translate(LX, LY); cx.rotate(S.aim);
+  cx.fillStyle = '#5b6aa8'; cx.fillRect(0, -6, 24, 12);
+  cx.restore();
+  cx.beginPath(); cx.arc(LX, LY, 14, 0, 7); cx.fillStyle = '#3a4270'; cx.fill();
+  if (S.state === 'aim') { cx.beginPath(); cx.arc(LX, LY, BR, 0, 7); cx.fillStyle = '#e8ecff'; cx.fill(); }
+
+  // 玉
+  cx.fillStyle = '#c9d2ff'; cx.beginPath();
+  for (const b of S.balls) { cx.moveTo(b.x + BR, b.y); cx.arc(b.x, b.y, BR, 0, 7); }
+  cx.fill();
+  cx.fillStyle = '#ffffff'; cx.beginPath();
+  for (const b of S.balls) { cx.moveTo(b.x - 1, b.y - 2); cx.arc(b.x - 2, b.y - 2, 2, 0, 7); }
+  cx.fill();
+
+  // パーティクル
+  for (const f of S.fx) { cx.globalAlpha = Math.min(1, f.t * 2.5); cx.fillStyle = f.c; cx.fillRect(f.x - 2, f.y - 2, 4, 4); }
+  cx.globalAlpha = 1;
+
+  // ダメージ文字
+  cx.textAlign = 'center';
+  for (const t of S.texts) {
+    cx.globalAlpha = Math.min(1, t.t * 2.5);
+    cx.font = `bold ${t.big ? 20 : 13}px system-ui`;
+    cx.lineWidth = 3; cx.strokeStyle = '#0b0d18'; cx.strokeText(t.s, t.x, t.y);
+    cx.fillStyle = t.c; cx.fillText(t.s, t.x, t.y);
+  }
+  cx.globalAlpha = 1;
+
+  // 被ダメ時の赤フラッシュ
+  if (S.hurt > 0) { cx.fillStyle = `rgba(255,40,70,${S.hurt * 0.35})`; cx.fillRect(-20, -20, W + 40, H + 40); }
+
+  if (S.state === 'aim' && S.turn === 0 && S.stage === 1) {
+    cx.textAlign = 'center'; cx.font = 'bold 15px system-ui'; cx.fillStyle = '#ffffffcc';
+    cx.fillText('狙ってクリック（タップ）で発射！', W / 2, 205);
+  }
+  cx.restore();
+}
+
+// ---------- ループ ----------
+let last = performance.now(), acc = 0;
+function frame(now) {
+  const rdt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (S) {
+    if (S.state === 'fire') {
+      acc += rdt * speed;
+      let n = 0;
+      while (acc >= DT && n < 24) { step(DT); acc -= DT; n++; }
+      if (S.enemy.dead) {
+        S.enemy.deadT += rdt;
+        if (S.enemy.deadT > 1.0) { S.balls = []; S.queue = []; endTurn(); }
+      } else if (!S.balls.length && !S.queue.length) { acc = 0; endTurn(); }
+    } else if (S.enemy.dead) S.enemy.deadT += rdt;
+    for (const p of S.pegs) if (p.fl > 0) p.fl = Math.max(0, p.fl - rdt * 3);
+    for (let i = 0; i < NPOCK; i++) S.pockFl[i] = Math.max(0, S.pockFl[i] - rdt * 3);
+    for (const f of S.fx) { f.x += f.vx * rdt; f.y += f.vy * rdt; f.vy += 300 * rdt; f.t -= rdt; }
+    S.fx = S.fx.filter(f => f.t > 0);
+    for (const t of S.texts) { t.y -= 30 * rdt; t.t -= rdt; }
+    S.texts = S.texts.filter(t => t.t > 0);
+    S.shake = Math.max(0, S.shake - rdt); S.hurt = Math.max(0, S.hurt - rdt);
+    S.enemy.hit = Math.max(0, S.enemy.hit - rdt); S.enemy.atkAnim = Math.max(0, S.enemy.atkAnim - rdt);
+    draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------- 画面サイズ ----------
+function resize() {
+  const s = Math.min(innerWidth / W, innerHeight / H), dpr = window.devicePixelRatio || 1;
+  cv.style.width = W * s + 'px'; cv.style.height = H * s + 'px';
+  cv.width = Math.round(W * s * dpr); cv.height = Math.round(H * s * dpr);
+  cx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
+}
+addEventListener('resize', resize);
+resize();
+
+// ---------- 入力 ----------
+function setAim(e) {
+  if (!S || S.state !== 'aim') return;
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * W, y = (e.clientY - r.top) / r.height * H;
+  let a = Math.atan2(y - LY, x - LX);
+  if (a < 0) a = a < -Math.PI / 2 ? Math.PI - 0.12 : 0.12;
+  S.aim = Math.max(0.12, Math.min(Math.PI - 0.12, a));
+}
+cv.addEventListener('pointermove', setAim);
+cv.addEventListener('pointerdown', e => { setAim(e); try { cv.setPointerCapture(e.pointerId); } catch (_) {} });
+cv.addEventListener('pointerup', e => { setAim(e); fire(); });
+addEventListener('keydown', e => {
+  if (!S) return;
+  if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); fire(); }
+  if (e.code === 'ArrowLeft') S.aim = Math.min(Math.PI - 0.12, S.aim + 0.03);
+  if (e.code === 'ArrowRight') S.aim = Math.max(0.12, S.aim - 0.03);
+});
+
+$('bStart').onclick = () => { $('ovStart').classList.remove('on'); newRun(); snd(660, 0.1, 'triangle', 0.05); };
+$('bRetry').onclick = () => { $('ovOver').classList.remove('on'); newRun(); };
+$('bSpd').onclick = () => { speed = speed === 1 ? 2.5 : 1; $('bSpd').classList.toggle('on', speed > 1); };
+$('bSnd').onclick = () => { soundOn = !soundOn; lsSet('pachirogue_snd', soundOn); $('bSnd').textContent = soundOn ? '🔊' : '🔇'; };
+$('bSnd').textContent = soundOn ? '🔊' : '🔇';
+$('bestTxt').textContent = best ? `最高記録：STAGE ${best} クリア` : '';
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
